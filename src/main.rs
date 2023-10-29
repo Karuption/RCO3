@@ -1,15 +1,14 @@
 mod commands;
 
 use crate::commands::{parse_command, Command};
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{Buf, BytesMut};
 use std::error::Error;
 use std::fmt::{Debug, Formatter};
 use std::io;
-use std::io::{BufRead, Read};
+use std::io::BufRead;
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
-use tokio_stream::StreamExt;
 
 #[allow(dead_code)]
 #[tokio::main]
@@ -22,21 +21,29 @@ async fn main() -> std::io::Result<()> {
         let socket = con.accept().await?;
         println!("{:?} Connected", socket.1);
 
-        tokio::spawn(async move { process(socket).await });
+        tokio::spawn(async move {
+            let r = process(socket).await;
+            println!("{:?}", r)
+        });
     }
 }
 
-async fn process(socket: (TcpStream, SocketAddr)) -> io::Result<()> {
-    let mut con = Connection::new(socket.0);
+async fn process(socket: (TcpStream, SocketAddr)) -> Result<(), String> {
+    let con = Connection::new(socket.0);
     let mut user = con
         .init(socket.1)
         .await
         .expect("unable to initialize the connection");
 
+    while let Some(cmd) = user.read_command().await.map_err(|x| x.to_string())? {
+        println!("{cmd:?}");
+    }
+
+    println!("{} has disconnected", user.host_mask());
     Ok(())
 }
 
-struct Connection {
+pub(crate) struct Connection {
     stream: BufWriter<TcpStream>,
     buff: BytesMut,
 }
@@ -55,8 +62,6 @@ impl Connection {
             return Err("buffer closed before init".into());
         }
 
-        println!("{:?}", &self.buff);
-
         let mut lines = self.buff.lines().peekable();
 
         let mut nick = "".to_string();
@@ -65,7 +70,7 @@ impl Connection {
             let cmd = parse_command(line)?;
             println!("{:?}", &cmd);
             match cmd {
-                Command::CAP(_) => {}
+                Command::Cap(_) => {}
                 Command::Join(channels, _) => {}
                 Command::Nick(name, _) => nick = name,
                 Command::Quit(msg) => {}
@@ -76,15 +81,19 @@ impl Connection {
 
         self.buff.advance(len);
 
-        Ok(User::new(
+        let mut user = User::new(
             nick.to_string(),
             user.to_string(),
             addr.ip().to_string(),
             self,
-        ))
+        );
+
+        user.write(b"332 #test :A channel").await?;
+
+        Ok(user)
     }
 }
-struct User {
+pub struct User {
     nickname: String,
     username: String,
     hostname: String,
@@ -93,7 +102,7 @@ struct User {
 }
 
 impl User {
-    pub fn new(
+    pub(crate) fn new(
         nickname: String,
         username: String,
         hostname: String,
@@ -108,7 +117,40 @@ impl User {
     }
 
     pub fn host_mask(&self) -> String {
-        format!("{}!{}@{}", self.nickname, self.username, self.hostname)
+        format!("{}!{}@{}", &self.nickname, &self.username, &self.hostname)
+    }
+
+    pub async fn write(&mut self, msg: &[u8]) -> io::Result<()> {
+        self.connection.stream.write_all(msg).await?;
+        self.connection.stream.flush().await
+    }
+
+    pub async fn write_command(&mut self, command: Command) -> io::Result<()> {
+        self.connection
+            .stream
+            .write_all(command.write_value()?.as_ref())
+            .await?;
+        self.connection.stream.flush().await
+    }
+
+    pub async fn read_command(&mut self) -> Result<Option<Command>, Box<dyn Error>> {
+        if let Some(Ok(raw_cmd)) = self.connection.buff.lines().next() {
+            self.connection.buff.advance(raw_cmd.len());
+            Ok(Some(commands::parse_command(raw_cmd)?))
+        } else {
+            let len = self
+                .connection
+                .stream
+                .read_buf(&mut self.connection.buff)
+                .await?;
+            if len == 0 {
+                return Ok(None);
+            }
+
+            let raw_cmd = self.connection.buff.lines().next().unwrap()?;
+            self.connection.buff.advance(raw_cmd.len());
+            Ok(Some(commands::parse_command(raw_cmd)?))
+        }
     }
 }
 
