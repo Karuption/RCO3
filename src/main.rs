@@ -4,9 +4,10 @@ use crate::commands::{parse_command, Command};
 use bytes::{Buf, BytesMut};
 use std::error::Error;
 use std::fmt::{Debug, Formatter};
-use std::io;
 use std::io::BufRead;
+use std::io::{self, Read};
 use std::net::SocketAddr;
+use std::os::raw;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -71,9 +72,8 @@ impl Connection {
             println!("{:?}", &cmd);
             match cmd {
                 Command::Cap(_) => {}
-                Command::Join(channels, _) => {}
                 Command::Nick(name, _) => nick = name,
-                Command::Quit(msg) => {}
+                Command::Quit(_msg) => {}
                 Command::User(user_input) => user = user_input,
                 _ => {}
             }
@@ -135,22 +135,30 @@ impl User {
 
     pub async fn read_command(&mut self) -> Result<Option<Command>, Box<dyn Error>> {
         if let Some(Ok(raw_cmd)) = self.connection.buff.lines().next() {
-            self.connection.buff.advance(raw_cmd.len());
-            Ok(Some(commands::parse_command(raw_cmd)?))
-        } else {
-            let len = self
-                .connection
-                .stream
-                .read_buf(&mut self.connection.buff)
-                .await?;
-            if len == 0 {
-                return Ok(None);
-            }
+            self.connection.buff.advance(raw_cmd.len() + 2);
 
-            let raw_cmd = self.connection.buff.lines().next().unwrap()?;
-            self.connection.buff.advance(raw_cmd.len());
-            Ok(Some(commands::parse_command(raw_cmd)?))
+            println!("Raw Command: {:?}", raw_cmd);
+
+            return Ok(Some(commands::parse_command(raw_cmd)?));
         }
+
+        let len = self
+            .connection
+            .stream
+            .read_buf(&mut self.connection.buff)
+            .await?;
+        if len == 0 {
+            return Ok(None);
+        }
+
+        let raw_cmd = self.connection.buff.lines().next().unwrap()?;
+
+        //advancing the buffer since making an iterator doesn't move the cursor
+        //adding 2 bytes to the cursor advancement account for the line return on windows
+        println!("Raw Command: {:?}", raw_cmd);
+        self.connection.buff.advance(raw_cmd.len() + 2);
+
+        Ok(Some(commands::parse_command(raw_cmd)?))
     }
 }
 
@@ -161,5 +169,11 @@ impl Debug for User {
             "User {{ nick: {:?} }}, Username: {{ username: {:?} }}",
             self.nickname, self.username
         )
+    }
+}
+
+impl Drop for User {
+    fn drop(&mut self) {
+        println!("User dropped: {:?}", self.connection.buff);
     }
 }
