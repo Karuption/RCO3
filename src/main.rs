@@ -4,17 +4,15 @@ use crate::commands::{parse_command, Command};
 use bytes::{Buf, BytesMut};
 use std::error::Error;
 use std::fmt::{Debug, Formatter};
-use std::io::BufRead;
-use std::io::{self, Read};
+use std::io::{self, BufRead};
 use std::net::SocketAddr;
-use std::os::raw;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 
 #[allow(dead_code)]
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let con = TcpListener::bind("0.0.0.0:6697")
+    let con = TcpListener::bind("192.168.1.168:6697")
         .await
         .expect("Cannot open port");
 
@@ -36,8 +34,33 @@ async fn process(socket: (TcpStream, SocketAddr)) -> Result<(), String> {
         .await
         .expect("unable to initialize the connection");
 
-    while let Some(cmd) = user.read_command().await.map_err(|x| x.to_string())? {
-        println!("{cmd:?}");
+    loop {
+        let cmd_result = user.read_command().await.map_err(|x| x.to_string());
+        if let Err(e) = cmd_result {
+            //handle unknown command
+            println!("Error parsing command: {e:?}");
+            continue;
+        }
+        if let Ok(None) = cmd_result {
+            continue;
+        }
+
+        println!("{cmd_result:?}");
+        match cmd_result?.unwrap() {
+            Command::Cap(_) => {}
+            Command::Join(_channels, _) => {}
+            Command::List(_) => {}
+            Command::Names(_) => {}
+            Command::Nick(nick, _) => user.nickname = nick,
+            Command::Ping => {}
+            Command::Pong => {}
+            Command::Topic(_) => {}
+            Command::User(_) => {}
+            Command::Quit(_q) => {
+                println!("User quitting {:?}", _q.get_msg()); //broadcast leaving msg
+                break;
+            }
+        }
     }
 
     println!("{} has disconnected", user.host_mask());

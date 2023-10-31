@@ -1,12 +1,9 @@
 use nom::branch::alt;
-use nom::bytes::complete::{tag, take_until, take_while1};
-use nom::character::complete::{
-    alphanumeric1, line_ending, multispace0, newline, not_line_ending, space1, u32,
-};
-use nom::character::is_newline;
-use nom::combinator::{not, opt, recognize};
-use nom::multi::{separated_list0, separated_list1};
-use nom::sequence::{pair, preceded, terminated};
+use nom::bytes::complete::tag;
+use nom::character::complete::{alphanumeric1, multispace0, not_line_ending, space1, u32};
+use nom::combinator::{opt, recognize};
+use nom::multi::separated_list1;
+use nom::sequence::{preceded, terminated};
 use nom::IResult;
 
 pub fn parse_command(input: String) -> Result<Command, String> {
@@ -28,7 +25,12 @@ fn parse_cap(input: &str) -> IResult<&str, Command> {
 
 fn parse_quit(input: &str) -> IResult<&str, Command> {
     let (rest, quit_msg) = preceded(tag(":"), not_line_ending)(input)?;
-    Ok((rest, Command::Quit(quit_msg.to_string())))
+    Ok((
+        rest,
+        Command::Quit(Quit {
+            msg: quit_msg.to_string(),
+        }),
+    ))
 }
 
 fn parse_join(input: &str) -> IResult<&str, Command> {
@@ -65,9 +67,20 @@ pub enum Command {
     Nick(String, u32),
     Ping,
     Pong,
-    Quit(String),
+    Quit(Quit),
     Topic(String),
     User(String),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Quit {
+    msg: String,
+}
+
+impl Quit {
+    pub fn get_msg(&self) -> &String {
+        &self.msg
+    }
 }
 
 impl Command {
@@ -126,6 +139,8 @@ fn parse_user_test() {
 fn parse_quit_test() {
     assert_eq!(
         parse_command("QUIT :asdf !5^*%".to_string()).unwrap(),
-        Command::Quit("asdf !5^*%".to_string())
+        Command::Quit(Quit {
+            msg: "asdf !5^*%".to_string()
+        })
     );
 }
