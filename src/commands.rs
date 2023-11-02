@@ -1,10 +1,14 @@
 use nom::branch::alt;
-use nom::bytes::complete::tag;
-use nom::character::complete::{alphanumeric1, multispace0, not_line_ending, space1, u32};
-use nom::combinator::{opt, recognize};
-use nom::multi::separated_list1;
+use nom::bytes::complete::{tag, take_till1, take_until, take_while1};
+use nom::character::complete::{
+    alphanumeric1, multispace0, multispace1, not_line_ending, space1, u32,
+};
+use nom::combinator::{all_consuming, not, opt, recognize};
+use nom::multi::{separated_list0, separated_list1};
 use nom::sequence::{preceded, terminated};
 use nom::IResult;
+
+use crate::commands;
 
 pub fn parse_command(input: String) -> Result<Command, String> {
     let inp = input.as_str();
@@ -34,15 +38,42 @@ fn parse_quit(input: &str) -> IResult<&str, Command> {
 }
 
 fn parse_join(input: &str) -> IResult<&str, Command> {
-    let (rest, list) = separated_list1(tag(","), recognize(preceded(tag("#"), alphanumeric1)))(
-        input,
-    )
+    let (rest, list) = separated_list1(
+        tag(","),
+        recognize(preceded(alt((tag("#"), tag("&"))), alphanumeric1)),
+    )(input)
     .map(|(x, y)| {
         let channels: Vec<String> = y.iter().map(|x| x.to_string()).collect();
         (x, channels)
     })?;
 
-    Ok((rest, Command::Join(list, None)))
+    let (rest, keys) = parse_join_keys(rest)?;
+
+    Ok((rest, Command::Join(list, keys)))
+}
+
+fn parse_join_keys(input: &str) -> IResult<&str, Option<Vec<String>>> {
+    opt(preceded(
+        multispace1,
+        separated_list0(
+            tag(","),
+            take_while1(|x: char| !x.is_whitespace() && x != ','),
+        ),
+    ))(input)
+    .map(|(_rest, opt)| {
+        (
+            _rest,
+            opt.map(|v| {
+                v.iter()
+                    .map(|pass| {
+                        let p = pass.to_string();
+                        println!("{:?}", &p);
+                        p
+                    })
+                    .collect()
+            }),
+        )
+    })
 }
 
 fn parse_nick(input: &str) -> IResult<&str, Command> {
@@ -61,7 +92,7 @@ fn parse_user(input: &str) -> IResult<&str, Command> {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Cap(String),
-    Join(Vec<String>, Option<String>),
+    Join(Vec<String>, Option<Vec<String>>),
     List(String),
     Names(String),
     Nick(String, u32),
@@ -78,7 +109,7 @@ pub struct Quit {
 }
 
 impl Quit {
-    pub fn get_msg(&self) -> &String {
+    pub fn get_msg(&self) -> &str {
         &self.msg
     }
 }
@@ -124,6 +155,27 @@ fn parse_join_test() {
     assert_eq!(
         parse_command("JOIN #test,#test2".to_string()).unwrap(),
         Command::Join(vec!["#test".to_string(), "#test2".to_string()], None)
+    );
+
+    assert_eq!(
+        parse_command("JOIN #test,&test2".to_string()).unwrap(),
+        Command::Join(vec!["#test".to_string(), "&test2".to_string()], None)
+    );
+
+    assert_eq!(
+        parse_command("JOIN #test,&test2 key1".to_string()).unwrap(),
+        Command::Join(
+            vec!["#test".to_string(), "&test2".to_string()],
+            Some(vec!["key1".to_string()])
+        )
+    );
+
+    assert_eq!(
+        parse_command("JOIN #test,&test2 key1,key2".to_string()).unwrap(),
+        Command::Join(
+            vec!["#test".to_string(), "&test2".to_string()],
+            Some(vec!["key1".to_string(), "key2".to_string()])
+        )
     );
 }
 
