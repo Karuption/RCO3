@@ -1,26 +1,37 @@
 use nom::branch::alt;
-use nom::bytes::complete::{tag, take_till1, take_until, take_while1};
+use nom::bytes::complete::{tag, take_while1};
 use nom::character::complete::{
     alphanumeric1, multispace0, multispace1, not_line_ending, space1, u32,
 };
-use nom::combinator::{all_consuming, not, opt, recognize};
+use nom::combinator::{opt, recognize};
+use nom::error::ParseError;
 use nom::multi::{separated_list0, separated_list1};
 use nom::sequence::{preceded, terminated};
-use nom::IResult;
-
-use crate::commands;
+use nom::{Err, IResult, Parser};
 
 pub fn parse_command(input: String) -> Result<Command, String> {
-    let inp = input.as_str();
     alt((
-        preceded(tag("CAP "), parse_cap),
-        preceded(tag("JOIN "), parse_join),
-        preceded(tag("NICK "), parse_nick),
-        preceded(tag("USER "), parse_user),
-        preceded(tag("QUIT "), parse_quit),
-    ))(inp)
+        parse_command_prefix("CAP", parse_cap),
+        parse_command_prefix("JOIN", parse_join),
+        parse_command_prefix("NICK", parse_nick),
+        parse_command_prefix("USER", parse_user),
+        parse_command_prefix("QUIT", parse_quit),
+    ))(input.as_str())
     .map(|x| x.1)
     .map_err(|x| x.to_string())
+}
+fn parse_command_prefix<'a, E, G>(
+    command_prefix: &'a str,
+    command_body_parser: G,
+) -> impl FnMut(&'a str) -> Result<(&'a str, Command), Err<E>>
+where
+    E: ParseError<&'a str>,
+    G: Parser<&'a str, Command, E>,
+{
+    preceded(
+        alt((tag("\n"), tag("\r\n"), tag(""))),
+        preceded(terminated(tag(command_prefix), space1), command_body_parser),
+    )
 }
 
 fn parse_cap(input: &str) -> IResult<&str, Command> {
