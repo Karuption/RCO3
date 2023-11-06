@@ -97,7 +97,7 @@ impl Connection {
                 Command::Cap(_) => {}
                 Command::Nick(name, _) => nick = name,
                 Command::Quit(_msg) => {}
-                Command::User(user_input) => user = user_input,
+                Command::User(user_input) => user = user_input.user,
                 _ => {}
             }
         }

@@ -1,8 +1,8 @@
+use std::arch::x86_64::_MM_ROUND_NEAREST;
+
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_while1};
-use nom::character::complete::{
-    alphanumeric1, multispace0, multispace1, not_line_ending, space1, u32,
-};
+use nom::character::complete::{alphanumeric1, multispace1, not_line_ending, space1, u32};
 use nom::combinator::{opt, recognize};
 use nom::error::ParseError;
 use nom::multi::{separated_list0, separated_list1};
@@ -29,7 +29,7 @@ where
     G: Parser<&'a str, Command, E>,
 {
     preceded(
-        alt((tag("\n"), tag("\r\n"), tag(""))),
+        alt((tag("\n"), tag("\r\n"), tag("\\"), tag(""))),
         preceded(terminated(tag(command_prefix), space1), command_body_parser),
     )
 }
@@ -95,9 +95,30 @@ fn parse_nick(input: &str) -> IResult<&str, Command> {
 }
 
 fn parse_user(input: &str) -> IResult<&str, Command> {
-    let (rest, username) = terminated(alphanumeric1, multispace0)(input)?;
+    let (rest, user) = terminated(alphanumeric1, space1)(input)?;
     // only parse USER <user> <mode> <unused> <real name> and only using username anyways
-    Ok((rest, Command::User(username.to_string())))
+
+    let (rest, mode) = terminated(
+        terminated(
+            terminated(u32, space1),
+            take_while1(|x: char| !x.is_whitespace()),
+        ),
+        space1,
+    )(rest)?;
+
+    let (rest, real_name) = preceded(
+        tag(":"),
+        take_while1(|x: char| x.is_alphanumeric() || x == ' '),
+    )(rest)?;
+
+    Ok((
+        rest,
+        Command::User(User {
+            user: user.to_string(),
+            mode,                             //mode,
+            real_name: real_name.to_string(), //real_name.to_string(),
+        }),
+    ))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -111,7 +132,14 @@ pub enum Command {
     Pong,
     Quit(Quit),
     Topic(String),
-    User(String),
+    User(User),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct User {
+    pub user: String,
+    pub mode: u32,
+    pub real_name: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -193,8 +221,12 @@ fn parse_join_test() {
 #[test]
 fn parse_user_test() {
     assert_eq!(
-        parse_command("USER Username 0 * :realname\r\n".to_string()).unwrap(),
-        Command::User("Username".to_string())
+        parse_command("USER Username 0 * :real name\r\n".to_string()).unwrap(),
+        Command::User(User {
+            user: "Username".to_string(),
+            mode: 0u32,
+            real_name: "real name".to_string()
+        })
     );
 }
 
