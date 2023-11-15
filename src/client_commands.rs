@@ -1,7 +1,5 @@
-use std::arch::x86_64::_MM_ROUND_NEAREST;
-
 use nom::branch::alt;
-use nom::bytes::complete::{tag, take_while1};
+use nom::bytes::complete::{is_not, tag, take_while1};
 use nom::character::complete::{alphanumeric1, multispace1, not_line_ending, space1, u32};
 use nom::combinator::{opt, recognize};
 use nom::error::ParseError;
@@ -9,9 +7,10 @@ use nom::multi::{separated_list0, separated_list1};
 use nom::sequence::{preceded, terminated};
 use nom::{Err, IResult, Parser};
 
-pub fn parse_command(input: String) -> Result<Command, String> {
+pub fn parse_command(input: String) -> Result<ClientCommand, String> {
     alt((
         parse_command_prefix("CAP", parse_cap),
+        parse_command_prefix("Ping", parse_ping),
         parse_command_prefix("JOIN", parse_join),
         parse_command_prefix("NICK", parse_nick),
         parse_command_prefix("USER", parse_user),
@@ -23,10 +22,10 @@ pub fn parse_command(input: String) -> Result<Command, String> {
 fn parse_command_prefix<'a, E, G>(
     command_prefix: &'a str,
     command_body_parser: G,
-) -> impl FnMut(&'a str) -> Result<(&'a str, Command), Err<E>>
+) -> impl FnMut(&'a str) -> Result<(&'a str, ClientCommand), Err<E>>
 where
     E: ParseError<&'a str>,
-    G: Parser<&'a str, Command, E>,
+    G: Parser<&'a str, ClientCommand, E>,
 {
     preceded(
         alt((tag("\n"), tag("\r\n"), tag("\\"), tag(""))),
@@ -34,21 +33,21 @@ where
     )
 }
 
-fn parse_cap(input: &str) -> IResult<&str, Command> {
-    Ok((input, Command::Cap(input.to_string())))
+fn parse_cap(input: &str) -> IResult<&str, ClientCommand> {
+    Ok((input, ClientCommand::Cap(input.to_string())))
 }
 
-fn parse_quit(input: &str) -> IResult<&str, Command> {
+fn parse_quit(input: &str) -> IResult<&str, ClientCommand> {
     let (rest, quit_msg) = preceded(tag(":"), not_line_ending)(input)?;
     Ok((
         rest,
-        Command::Quit(Quit {
+        ClientCommand::Quit(Quit {
             msg: quit_msg.to_string(),
         }),
     ))
 }
 
-fn parse_join(input: &str) -> IResult<&str, Command> {
+fn parse_join(input: &str) -> IResult<&str, ClientCommand> {
     let (rest, list) = separated_list1(
         tag(","),
         recognize(preceded(alt((tag("#"), tag("&"))), alphanumeric1)),
@@ -60,7 +59,7 @@ fn parse_join(input: &str) -> IResult<&str, Command> {
 
     let (rest, keys) = parse_join_keys(rest)?;
 
-    Ok((rest, Command::Join(list, keys)))
+    Ok((rest, ClientCommand::Join(list, keys)))
 }
 
 fn parse_join_keys(input: &str) -> IResult<&str, Option<Vec<String>>> {
@@ -87,14 +86,14 @@ fn parse_join_keys(input: &str) -> IResult<&str, Option<Vec<String>>> {
     })
 }
 
-fn parse_nick(input: &str) -> IResult<&str, Command> {
+fn parse_nick(input: &str) -> IResult<&str, ClientCommand> {
     let (rest, username) = alphanumeric1(input)?;
     let (rest, hop_count) = opt(preceded(space1, u32))(rest).map(|x| (x.0, x.1.unwrap_or(0u32)))?;
 
-    Ok((rest, Command::Nick(username.to_string(), hop_count)))
+    Ok((rest, ClientCommand::Nick(username.to_string(), hop_count)))
 }
 
-fn parse_user(input: &str) -> IResult<&str, Command> {
+fn parse_user(input: &str) -> IResult<&str, ClientCommand> {
     let (rest, user) = terminated(alphanumeric1, space1)(input)?;
     // only parse USER <user> <mode> <unused> <real name> and only using username anyways
 
@@ -113,7 +112,7 @@ fn parse_user(input: &str) -> IResult<&str, Command> {
 
     Ok((
         rest,
-        Command::User(User {
+        ClientCommand::User(User {
             user: user.to_string(),
             mode,                             //mode,
             real_name: real_name.to_string(), //real_name.to_string(),
@@ -121,14 +120,19 @@ fn parse_user(input: &str) -> IResult<&str, Command> {
     ))
 }
 
+fn parse_ping(input: &str) -> IResult<&str, ClientCommand> {
+    let (rest, token) = is_not(" \t\r\n")(input)?;
+    Ok((rest, ClientCommand::Ping(token.to_string())))
+}
+
 #[derive(Debug, PartialEq, Eq)]
-pub enum Command {
+pub enum ClientCommand {
     Cap(String),
     Join(Vec<String>, Option<Vec<String>>),
     List(String),
     Names(String),
     Nick(String, u32),
-    Ping,
+    Ping(String),
     Pong,
     Quit(Quit),
     Topic(String),
@@ -153,10 +157,10 @@ impl Quit {
     }
 }
 
-impl Command {
+impl ClientCommand {
     pub(crate) fn write_value(&self) -> std::io::Result<String> {
         match self {
-            Command::Cap(_) => Ok("CAP End".to_string()),
+            ClientCommand::Cap(_) => Ok("CAP End".to_string()),
             // Command::Join(_, _) => {}
             // Command::List(_) => {}
             // Command::Names(_) => {}
@@ -175,12 +179,12 @@ impl Command {
 fn parse_nick_test() {
     assert_eq!(
         parse_command("NICK Somebody1 0".to_string()).unwrap(),
-        Command::Nick("Somebody1".to_string(), 0u32)
+        ClientCommand::Nick("Somebody1".to_string(), 0u32)
     );
 
     assert_eq!(
         parse_command("NICK Somebody1".to_string()).unwrap(),
-        Command::Nick("Somebody1".to_string(), 0)
+        ClientCommand::Nick("Somebody1".to_string(), 0)
     );
 }
 
@@ -188,22 +192,22 @@ fn parse_nick_test() {
 fn parse_join_test() {
     assert_eq!(
         parse_command("JOIN #test".to_string()).unwrap(),
-        Command::Join(vec!["#test".to_string()], None)
+        ClientCommand::Join(vec!["#test".to_string()], None)
     );
 
     assert_eq!(
         parse_command("JOIN #test,#test2".to_string()).unwrap(),
-        Command::Join(vec!["#test".to_string(), "#test2".to_string()], None)
+        ClientCommand::Join(vec!["#test".to_string(), "#test2".to_string()], None)
     );
 
     assert_eq!(
         parse_command("JOIN #test,&test2".to_string()).unwrap(),
-        Command::Join(vec!["#test".to_string(), "&test2".to_string()], None)
+        ClientCommand::Join(vec!["#test".to_string(), "&test2".to_string()], None)
     );
 
     assert_eq!(
         parse_command("JOIN #test,&test2 key1".to_string()).unwrap(),
-        Command::Join(
+        ClientCommand::Join(
             vec!["#test".to_string(), "&test2".to_string()],
             Some(vec!["key1".to_string()])
         )
@@ -211,7 +215,7 @@ fn parse_join_test() {
 
     assert_eq!(
         parse_command("JOIN #test,&test2 key1,key2".to_string()).unwrap(),
-        Command::Join(
+        ClientCommand::Join(
             vec!["#test".to_string(), "&test2".to_string()],
             Some(vec!["key1".to_string(), "key2".to_string()])
         )
@@ -222,7 +226,7 @@ fn parse_join_test() {
 fn parse_user_test() {
     assert_eq!(
         parse_command("USER Username 0 * :real name\r\n".to_string()).unwrap(),
-        Command::User(User {
+        ClientCommand::User(User {
             user: "Username".to_string(),
             mode: 0u32,
             real_name: "real name".to_string()
@@ -234,8 +238,16 @@ fn parse_user_test() {
 fn parse_quit_test() {
     assert_eq!(
         parse_command("QUIT :asdf !5^*%".to_string()).unwrap(),
-        Command::Quit(Quit {
+        ClientCommand::Quit(Quit {
             msg: "asdf !5^*%".to_string()
         })
     );
+}
+
+#[test]
+fn parse_ping_test() {
+    assert_eq!(
+        parse_command("Ping abeT456-".to_string()).unwrap(),
+        ClientCommand::Ping("abeT456-".to_string())
+    )
 }
